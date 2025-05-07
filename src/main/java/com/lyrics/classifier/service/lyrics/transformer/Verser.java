@@ -78,14 +78,10 @@ public class Verser extends Transformer implements DefaultParamsWritable {
         if (valueOption.isDefined()) {
             return (Integer) valueOption.get();
         } else {
-            // If default was not set (which it is in constructor), this would be an issue.
-            // But `getDefault` itself returns an Option, so .get() on it is safe if a
-            // default exists.
             Option<Object> defaultOption = getDefault(this.sentencesInVerse);
             if (defaultOption.isDefined()) {
                 return (Integer) defaultOption.get();
             }
-            // Should not happen if constructor sets default
             throw new IllegalStateException("sentencesInVerse param has no value and no default value.");
         }
     }
@@ -122,8 +118,6 @@ public class Verser extends Transformer implements DefaultParamsWritable {
         try {
             labelField = schema.apply(Column.LABEL.getName());
         } catch (IllegalArgumentException e) {
-            // This case should ideally not be hit if the pipeline is structured correctly,
-            // meaning LABEL column exists before this transformer.
             labelField = DataTypes.createStructField(Column.LABEL.getName(), DataTypes.DoubleType, true);
         }
 

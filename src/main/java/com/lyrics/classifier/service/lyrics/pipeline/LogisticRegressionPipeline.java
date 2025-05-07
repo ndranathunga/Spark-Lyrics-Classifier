@@ -64,7 +64,7 @@ public class LogisticRegressionPipeline extends CommonLyricsPipeline {
                 Verser verser = new Verser()
                                 .setInputCol(Column.STEMMED_SENTENCE.getName())
                                 .setOutputCol(Column.VERSE.getName());
-                // .setSentencesInVerse(4); // Default is 4, will be set by ParamGridBuilder
+                // .setSentencesInVerse(4); 
 
                 Word2Vec w2v = new Word2Vec()
                                 .setInputCol(Column.VERSE.getName())

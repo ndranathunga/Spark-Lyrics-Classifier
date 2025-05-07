@@ -10,7 +10,6 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import org.apache.spark.ml.PipelineModel;
-import org.apache.spark.ml.feature.IndexToString;
 import org.apache.spark.ml.feature.StringIndexerModel;
 import org.apache.spark.ml.linalg.Vector;
 import org.apache.spark.ml.tuning.CrossValidatorModel;
@@ -52,18 +51,15 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
 
         Dataset<Row> df = spark.read()
                 .option("header", "true")
-                .option("inferSchema", "true") // Infer schema to get correct types for genre initially
+                .option("inferSchema", "true")
                 .csv(csvPath)
                 .select(
-                        col("lyrics").alias(Column.VALUE.getName()), // Use Column.VALUE for lyrics
-                        lower(trim(col("genre"))).alias("genre_text") // Temp column for genre text
-                )
+                        col("lyrics").alias(Column.VALUE.getName()),
+                        lower(trim(col("genre"))).alias("genre_text"))
                 .na().drop("any", new String[] { Column.VALUE.getName(), "genre_text" })
                 .filter(col(Column.VALUE.getName()).rlike("\\w+"))
                 .withColumn(Column.ID.getName(), monotonically_increasing_id());
 
-        // Filter out genres not defined in the Genre enum to avoid StringIndexer issues
-        // or map them to UNKNOWN
         List<String> knownGenreNames = Arrays.stream(Genre.values())
                 .map(g -> g.getName().toLowerCase())
                 .filter(name -> !name.equals("unknown"))
@@ -71,7 +67,6 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
 
         df = df.filter(col("genre_text").isin(knownGenreNames.toArray(new String[0])));
 
-        // Fit StringIndexer on the "genre_text" column to create "label"
         this.genreIndexerModel = new StringIndexer()
                 .setInputCol("genre_text")
                 .setOutputCol(Column.LABEL.getName())
@@ -80,7 +75,7 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
         Dataset<Row> indexedDf = genreIndexerModel.transform(df).drop("genre_text");
 
         Dataset<Row>[] split = indexedDf.randomSplit(new double[] { 0.8, 0.2 }, 42);
-        // trainingSet = split[0].limit(1000).cache(); // Limit to 1000 rows for testing
+        // trainingSet = split[0].limit(1000).cache();
         trainingSet = split[0].cache();
         testSet = split[1].cache();
 
@@ -111,17 +106,14 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
 
         Dataset<Row> singleRowDf = spark.createDataset(
                 Collections.singletonList(unknownLyrics), Encoders.STRING())
-                .withColumnRenamed("value", Column.VALUE.getName()) // Ensure input column name matches pipeline
-                .withColumn(Column.ID.getName(), lit("unknown_predict_" + UUID.randomUUID().toString())) // Required by
-                                                                                                         // Numerator
-                .withColumn(Column.LABEL.getName(), lit(0.0)); // Dummy label for pipeline stages
+                .withColumnRenamed("value", Column.VALUE.getName())
+                .withColumn(Column.ID.getName(), lit("unknown_predict_" + UUID.randomUUID().toString()))
+                .withColumn(Column.LABEL.getName(), lit(0.0));
 
         Row predictionRow = bestModel.transform(singleRowDf).first();
 
-        double predictedIndex = predictionRow.getAs(Column.LABEL.getName()); // Prediction is in 'label' column due to
-                                                                             // pipeline setup for LogisticRegression
-        // It might be in "prediction" column, check the actual output schema of
-        // bestModel.transform
+        double predictedIndex = predictionRow.getAs(Column.LABEL.getName());
+
         if (predictionRow.schema().fieldIndex("prediction") >= 0) {
             predictedIndex = predictionRow.getAs("prediction");
         }
@@ -169,7 +161,7 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
     @Override
     public Map<String, Object> getModelStatistics(CrossValidatorModel model) {
         Map<String, Object> stats = new HashMap<>();
-        double[] avgMetrics = model.avgMetrics(); // Can be empty if CV not run with evaluation
+        double[] avgMetrics = model.avgMetrics();
         if (avgMetrics != null && avgMetrics.length > 0) {
             Arrays.sort(avgMetrics); // Smallest to largest
             stats.put("Best model metric (higher is better)", avgMetrics[avgMetrics.length - 1]);
