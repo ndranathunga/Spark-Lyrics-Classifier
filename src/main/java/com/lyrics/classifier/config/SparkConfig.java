@@ -1,4 +1,3 @@
-// src/main/java/com/lyrics/classifier/config/SparkConfig.java
 package com.lyrics.classifier.config;
 
 import org.apache.spark.SparkConf;
@@ -18,9 +17,8 @@ public class SparkConfig {
                 .set("spark.kryo.registrationRequired", "false")
                 .set("spark.kryo.unsafe", "false")
                 .set("spark.serializer.objectStreamReset", "100")
-                // .set("spark.ui.enabled", "false")
-                .set("spark.driver.memory", "2g");
-
+                // .set("spark.ui.enabled", "false") 
+                .set("spark.driver.memory", "4g");
 
         return SparkSession.builder()
                 .config(conf)

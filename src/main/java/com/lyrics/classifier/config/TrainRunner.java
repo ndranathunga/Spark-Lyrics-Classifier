@@ -1,4 +1,3 @@
-// src/main/java/com/lyrics/classifier/config/TrainRunner.java
 package com.lyrics.classifier.config;
 
 import com.lyrics.classifier.service.lyrics.pipeline.LogisticRegressionPipeline;
@@ -14,7 +13,6 @@ public class TrainRunner implements CommandLineRunner {
     private final LogisticRegressionPipeline pipeline;
     private final Environment env;
 
-    // ⇢ Spring injects both beans via this constructor
     public TrainRunner(LogisticRegressionPipeline pipeline, Environment env) {
         this.pipeline = pipeline;
         this.env = env;
@@ -24,8 +22,8 @@ public class TrainRunner implements CommandLineRunner {
     public void run(String... args) {
         String mode = env.getProperty("mode", "serve");
         if ("train".equalsIgnoreCase(mode)) {
-            pipeline.classify(); // trains + saves the model
-            System.exit(0); // quit after training
+            pipeline.classify();
+            System.exit(0);
         }
     }
 }

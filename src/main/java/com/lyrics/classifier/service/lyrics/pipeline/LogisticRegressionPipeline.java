@@ -1,17 +1,8 @@
-// src/main/java/com/lyrics/classifier/service/lyrics/pipeline/LogisticRegressionPipeline.java
 package com.lyrics.classifier.service.lyrics.pipeline;
 
+import com.lyrics.classifier.column.Column;
 import com.lyrics.classifier.service.MLService;
-import com.lyrics.classifier.service.lyrics.transformer.Cleanser;
-import com.lyrics.classifier.service.lyrics.transformer.Exploder;
-import com.lyrics.classifier.service.lyrics.transformer.Numerator;
-import com.lyrics.classifier.service.lyrics.transformer.Stemmer;
-import com.lyrics.classifier.service.lyrics.transformer.Uniter;
-import com.lyrics.classifier.service.lyrics.transformer.Verser;
-
-import static com.lyrics.classifier.service.lyrics.pipeline.CommonLyricsPipeline.log;
-
-import java.util.Map;
+import com.lyrics.classifier.service.lyrics.transformer.*;
 import org.apache.spark.ml.Pipeline;
 import org.apache.spark.ml.PipelineStage;
 import org.apache.spark.ml.classification.LogisticRegression;
@@ -28,68 +19,72 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
+import java.util.Map;
 
-@Component // picked up by Spring
+@Component
 public class LogisticRegressionPipeline extends CommonLyricsPipeline {
 
-        /* constructor injection cascades to CommonLyricsPipeline */
-        public LogisticRegressionPipeline(SparkSession spark,
-                        MLService mlService,
-                        Environment env) {
+        public LogisticRegressionPipeline(SparkSession spark, MLService mlService, Environment env) {
                 super(spark, mlService, env);
         }
 
-        /* -------------------------- TRAIN + METRICS -------------------------- */
         @Override
         public CrossValidatorModel classify() {
+                Dataset<Row> train = trainingSet();
+                Dataset<Row> test = testSet();
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 1. load & cache the training / test splits (defined in superclass)
-                 * ------------------------------------------------------------------
-                 */
-                Dataset<Row> train = trainingSet(); // comes from CommonLyricsPipeline
+                Cleanser cleanser = new Cleanser()
+                                .setInputCol(Column.VALUE.getName())
+                                .setOutputCol(Column.CLEAN.getName());
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 2. pipeline stages
-                 * ------------------------------------------------------------------
-                 */
-                Cleanser cleanser = new Cleanser(); // lyrics → clean
-                Numerator numerator = new Numerator(); // clean → clean (normal-form punctuation)
-                Tokenizer tokenizer = new Tokenizer() // clean → tokens
-                                .setInputCol("clean")
-                                .setOutputCol("tokens");
-                StopWordsRemover stop = new StopWordsRemover() // tokens → filtered
-                                .setInputCol("tokens")
-                                .setOutputCol("filtered");
-                Exploder exploder = new Exploder(); // filtered→ exploded token rows
-                Stemmer stemmer = new Stemmer(); // stemmed tokens
-                Uniter uniter = new Uniter(); // back to array<string>
-                Verser verser = new Verser(); // array → verse
-                Word2Vec w2v = new Word2Vec() // verse → features
-                                .setInputCol("verse")
+                Numerator numerator = new Numerator()
+                                .setInputCol(Column.ID.getName())
+                                .setOutputCol(Column.ROW_NUMBER.getName());
+
+                Tokenizer tokenizer = new Tokenizer()
+                                .setInputCol(Column.CLEAN.getName())
+                                .setOutputCol(Column.TOKENS.getName());
+
+                StopWordsRemover stopWordsRemover = new StopWordsRemover()
+                                .setInputCol(Column.TOKENS.getName())
+                                .setOutputCol(Column.FILTERED_WORDS.getName());
+
+                Exploder exploder = new Exploder()
+                                .setInputCol(Column.FILTERED_WORDS.getName())
+                                .setOutputCol(Column.FILTERED_WORD.getName());
+
+                Stemmer stemmer = new Stemmer()
+                                .setInputCol(Column.FILTERED_WORD.getName())
+                                .setOutputCol(Column.STEMMED_WORD.getName());
+
+                Uniter uniter = new Uniter()
+                                .setInputCol(Column.STEMMED_WORD.getName())
+                                .setOutputCol(Column.STEMMED_SENTENCE.getName());
+
+                Verser verser = new Verser()
+                                .setInputCol(Column.STEMMED_SENTENCE.getName())
+                                .setOutputCol(Column.VERSE.getName());
+                // .setSentencesInVerse(4); // Default is 4, will be set by ParamGridBuilder
+
+                Word2Vec w2v = new Word2Vec()
+                                .setInputCol(Column.VERSE.getName())
                                 .setOutputCol("features")
-                                .setMinCount(0);
+                                .setMinCount(1);
+
                 LogisticRegression lr = new LogisticRegression()
-                                .setLabelCol("label")
+                                .setLabelCol(Column.LABEL.getName())
                                 .setFeaturesCol("features");
 
                 Pipeline pipeline = new Pipeline().setStages(new PipelineStage[] {
-                                cleanser, numerator, tokenizer, stop, exploder,
+                                cleanser, numerator, tokenizer, stopWordsRemover, exploder,
                                 stemmer, uniter, verser, w2v, lr
                 });
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 3. hyper-parameter grid & cross-validator
-                 * ------------------------------------------------------------------
-                 */
                 ParamMap[] grid = new ParamGridBuilder()
-                                .addGrid(verser.sentencesInVerse(), new int[] { 4, 8 })
-                                .addGrid(w2v.vectorSize(), new int[] { 100, 200 })
+                                .addGrid(verser.sentencesInVerseParam(), new int[] { 4 })
+                                .addGrid(w2v.vectorSize(), new int[] { 50, 100, 150 }) // Tune this
                                 .addGrid(lr.regParam(), new double[] { 0.01 })
-                                .addGrid(lr.maxIter(), new int[] { 100, 200 })
+                                .addGrid(lr.maxIter(), new int[] { 50 })
                                 .build();
 
                 CrossValidator cv = new CrossValidator()
@@ -97,56 +92,33 @@ public class LogisticRegressionPipeline extends CommonLyricsPipeline {
                                 .setEstimatorParamMaps(grid)
                                 .setEvaluator(
                                                 new MulticlassClassificationEvaluator()
-                                                                .setLabelCol("label")
+                                                                .setLabelCol(Column.LABEL.getName())
                                                                 .setPredictionCol("prediction")
                                                                 .setMetricName("accuracy"))
-                                .setNumFolds(5);
+                                .setNumFolds(3);
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 4. train & pick the best model
-                 * ------------------------------------------------------------------
-                 */
-                CrossValidatorModel best = cv.fit(train);
+                CrossValidatorModel bestModel = cv.fit(train);
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 5. evaluate on held-out test set
-                 * ------------------------------------------------------------------
-                 */
-                Dataset<Row> predictions = best.transform(testSet); // test_df is in the super-class
+                Dataset<Row> predictionsOnTest = bestModel.transform(test);
                 double accuracy = new MulticlassClassificationEvaluator()
-                                .setLabelCol("label")
+                                .setLabelCol(Column.LABEL.getName())
                                 .setPredictionCol("prediction")
                                 .setMetricName("accuracy")
-                                .evaluate(predictions);
-
+                                .evaluate(predictionsOnTest);
                 log.info("Accuracy on test set: {}", accuracy);
 
-                /*
-                 * ------------------------------------------------------------------
-                 * 6. persist & report metrics
-                 * ------------------------------------------------------------------
-                 */
                 String modelPath = modelBaseDir().resolve(modelSubdir()).toString();
-                saveModel(best, modelPath);
+                saveModel(bestModel, modelPath);
 
-                Map<String, Object> stats = Map.of(
-                                "accuracy", best.avgMetrics()[0]);
+                Map<String, Object> stats = getModelStatistics(bestModel);
+                stats.put("testSetAccuracy", accuracy);
                 printModelStatistics(stats);
 
-                return best;
+                return bestModel;
         }
 
-        /* Each concrete pipeline stores its model under a sub-directory. */
         @Override
         protected String modelSubdir() {
-                return "logreg";
-        }
-
-        @Override
-        public Map<String, Object> getModelStatistics(CrossValidatorModel model) {
-                // let the common base do the work for now
-                return super.getModelStatistics(model);
+                return "logreg_custom";
         }
 }

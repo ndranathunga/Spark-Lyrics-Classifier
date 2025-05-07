@@ -1,32 +1,22 @@
-// src/main/java/com/lyrics/classifier/service/lyrics/GenrePrediction.java
 package com.lyrics.classifier.service.lyrics;
+
+import java.util.Map;
 
 public class GenrePrediction {
 
-    private final String genre;
-    private final Double metalProbability; // may be null
-    private final Double popProbability; // may be null
+    private final String predictedGenre;
+    private final Map<String, Double> probabilities;
 
-    public GenrePrediction(String genre, Double metalProbability, Double popProbability) {
-        this.genre = genre;
-        this.metalProbability = metalProbability;
-        this.popProbability = popProbability;
+    public GenrePrediction(String predictedGenre, Map<String, Double> probabilities) {
+        this.predictedGenre = predictedGenre;
+        this.probabilities = probabilities;
     }
 
-    public GenrePrediction(String genre) { // fallback constructor
-        this(genre, null, null);
+    public String getPredictedGenre() {
+        return predictedGenre;
     }
 
-    /* getters */
-    public String getGenre() {
-        return genre;
-    }
-
-    public Double getMetalProbability() {
-        return metalProbability;
-    }
-
-    public Double getPopProbability() {
-        return popProbability;
+    public Map<String, Double> getProbabilities() {
+        return probabilities;
     }
 }

@@ -1,24 +1,40 @@
-// src/main/java/com/lyrics/classifier/service/lyrics/Genre.java
 package com.lyrics.classifier.service.lyrics;
 
 public enum Genre {
-    METAL(0d, "METAL"),
-    POP(1d, "POP"),
-    UNKNOWN(-1d, "UNKNOWN");
+    POP("POP"),
+    COUNTRY("COUNTRY"),
+    BLUES("BLUES"),
+    JAZZ("JAZZ"),
+    REGGAE("REGGAE"),
+    ROCK("ROCK"),
+    HIP_HOP("HIP HOP"),
+    RAP("RAP");
 
-    private final Double value;
     private final String name;
-    Genre(Double v, String n) { value = v; name = n; }
 
-    public Double getValue() { return value; }
-    public String getName()  { return name; }
+    Genre(String n) {
+        this.name = n;
+    }
 
-    public static Genre from(int idx) {
+    public String getName() {
+        return name;
+    }
+
+    public static String fromIndex(int idx, String[] allLabelsFromIndexer) {
+        if (idx >= 0 && idx < allLabelsFromIndexer.length) {
+            return allLabelsFromIndexer[idx].toUpperCase();
+        }
+        return "PREDICTION_INDEX_OUT_OF_BOUNDS";
+    }
+
+    public static Genre fromName(String name) {
+        if (name == null)
+            return null;
         for (Genre g : Genre.values()) {
-            if (g.ordinal() == idx) {
+            if (g.getName().equalsIgnoreCase(name)) {
                 return g;
             }
         }
-        return UNKNOWN;
+        return null;
     }
 }

@@ -1,4 +1,3 @@
-// src/main/java/com/lyrics/classifier/service/MLService.java
 package com.lyrics.classifier.service;
 
 import java.io.IOException;
@@ -25,7 +24,6 @@ public class MLService {
         this.spark = spark;
     }
 
-    /* ---------- linear regression demo ---------- */
     public void trainLinearRegression(String parquet, int maxIter) {
         Pair<Dataset<Row>, Dataset<Row>> split = splitTrainTest(parquet);
         trainLinearRegression(split.getLeft(), split.getRight(), maxIter);
@@ -40,26 +38,21 @@ public class MLService {
                 .setElasticNetParam(0.8);
 
         LinearRegressionModel model = lr.fit(train);
-
         System.out.println("Coefficients: " + model.coefficients());
-
-        LinearRegressionTrainingSummary s = model.summary(); // ← fixed
+        LinearRegressionTrainingSummary s = model.summary();
         System.out.printf("Iterations=%d  RMSE=%.4f%n",
                 s.totalIterations(), s.rootMeanSquaredError());
-
         Row first = model.transform(test)
                 .select("features", "label", "prediction")
                 .first();
         System.out.println(first);
     }
 
-    /* ---------- k-means demo ---------- */
     public KMeansModel trainKMeans(String parquet, int k) {
         Dataset<Row> ds = spark.read().parquet(parquet).cache();
         return new KMeans().setK(k).fit(ds);
     }
 
-    /* ---------- helpers ---------- */
     private Pair<Dataset<Row>, Dataset<Row>> splitTrainTest(String parquet) {
         Dataset<Row> full = spark.read().parquet(parquet);
         Dataset<Row>[] split = full.randomSplit(new double[] { 0.7, 0.3 }, 42);

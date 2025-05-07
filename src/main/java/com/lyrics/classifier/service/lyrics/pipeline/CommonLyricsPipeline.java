@@ -1,138 +1,144 @@
-// src/main/java/com/lyrics/classifier/service/lyrics/pipeline/CommonLyricsPipeline.java
 package com.lyrics.classifier.service.lyrics.pipeline;
 
+import com.lyrics.classifier.column.Column;
 import com.lyrics.classifier.service.MLService;
 import com.lyrics.classifier.service.lyrics.Genre;
 import com.lyrics.classifier.service.lyrics.GenrePrediction;
 
 import java.nio.file.Path;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.spark.ml.PipelineModel;
-import org.apache.spark.ml.linalg.DenseVector;
+import org.apache.spark.ml.feature.IndexToString;
+import org.apache.spark.ml.feature.StringIndexerModel;
+import org.apache.spark.ml.linalg.Vector;
 import org.apache.spark.ml.tuning.CrossValidatorModel;
 import org.apache.spark.sql.*;
-import org.apache.spark.sql.types.DataTypes; // ← use DataTypes, not DoubleType$
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
+import org.apache.spark.ml.feature.StringIndexer;
 
 import static org.apache.spark.sql.functions.*;
 
-/**
- * Common helpers for every lyrics-pipeline implementation.
- */
 public abstract class CommonLyricsPipeline implements LyricsPipeline {
 
     protected static final Logger log = LoggerFactory.getLogger(CommonLyricsPipeline.class);
 
     private final SparkSession spark;
     private final MLService mlService;
-    @SuppressWarnings("unused")
-    private final Environment env;
+    protected final Environment env;
 
-    /*
-     * ------------------------ configurable via application.yml
-     * ------------------------
-     */
     @Value("${lyrics.csv.path}")
     private String csvPath;
     @Value("${lyrics.model.directory.path}")
     private String modelDir;
-    /*
-     * -----------------------------------------------------------------------------
-     * -----
-     */
 
-    protected Dataset<Row> trainingSet; // cached after first read
+    protected Dataset<Row> trainingSet;
     protected Dataset<Row> testSet;
+    protected StringIndexerModel genreIndexerModel; // To store the fitted StringIndexerModel
 
-    /*
-     * constructor injection
-     * ------------------------------------------------------------
-     */
-    public CommonLyricsPipeline(SparkSession spark,
-            MLService mlService,
-            Environment env) {
+    public CommonLyricsPipeline(SparkSession spark, MLService mlService, Environment env) {
         this.spark = spark;
         this.mlService = mlService;
         this.env = env;
     }
 
-    /*
-     * --------------------------- CSV ingestion + 80/20 split
-     * --------------------------
-     */
-    protected Dataset<Row> readCsv() {
+    protected void prepareData() {
         if (trainingSet != null)
-            return trainingSet; // already done
+            return;
 
         Dataset<Row> df = spark.read()
                 .option("header", "true")
-                .option("multiLine", false)
+                .option("inferSchema", "true") // Infer schema to get correct types for genre initially
                 .csv(csvPath)
-                .select("genre", "lyrics")
-                .na().drop("any", new String[] { "genre", "lyrics" })
-                .filter(col("lyrics").rlike("\\w+"))
-                .withColumn("id", monotonically_increasing_id());
+                .select(
+                        col("lyrics").alias(Column.VALUE.getName()), // Use Column.VALUE for lyrics
+                        lower(trim(col("genre"))).alias("genre_text") // Temp column for genre text
+                )
+                .na().drop("any", new String[] { Column.VALUE.getName(), "genre_text" })
+                .filter(col(Column.VALUE.getName()).rlike("\\w+"))
+                .withColumn(Column.ID.getName(), monotonically_increasing_id());
 
-        /* map genre → numeric label */
-        Column labelCol = when(lower(col("genre")).equalTo("pop"), lit(Genre.POP.getValue()))
-                .when(lower(col("genre")).equalTo("metal"), lit(Genre.METAL.getValue()))
-                .otherwise(lit(Genre.UNKNOWN.getValue()))
-                .cast(DataTypes.DoubleType); // ← FIX: use DataTypes
+        // Filter out genres not defined in the Genre enum to avoid StringIndexer issues
+        // or map them to UNKNOWN
+        List<String> knownGenreNames = Arrays.stream(Genre.values())
+                .map(g -> g.getName().toLowerCase())
+                .filter(name -> !name.equals("unknown"))
+                .collect(Collectors.toList());
 
-        df = df.withColumn("label", labelCol);
+        df = df.filter(col("genre_text").isin(knownGenreNames.toArray(new String[0])));
 
-        Dataset<Row>[] split = df.randomSplit(new double[] { 0.8, 0.2 }, 42);
+        // Fit StringIndexer on the "genre_text" column to create "label"
+        this.genreIndexerModel = new StringIndexer()
+                .setInputCol("genre_text")
+                .setOutputCol(Column.LABEL.getName())
+                .fit(df);
+
+        Dataset<Row> indexedDf = genreIndexerModel.transform(df).drop("genre_text");
+
+        Dataset<Row>[] split = indexedDf.randomSplit(new double[] { 0.8, 0.2 }, 42);
+        // trainingSet = split[0].limit(1000).cache(); // Limit to 1000 rows for testing
         trainingSet = split[0].cache();
-        trainingSet.count();
         testSet = split[1].cache();
-        testSet.count();
 
+        log.info("Total valid rows after filtering: {}", indexedDf.count());
         log.info("Training set rows: {}", trainingSet.count());
-        log.info("Test set rows    : {}", testSet.count());
-        return trainingSet;
+        log.info("Test set rows: {}", testSet.count());
+        log.info("Genre labels after indexing: {}", Arrays.toString(genreIndexerModel.labelsArray()[0]));
+
+        if (trainingSet.isEmpty()) {
+            log.error("Training set is empty. Check CSV path, content, and genre filtering.");
+            throw new IllegalStateException("Training data could not be prepared or is empty.");
+        }
     }
 
-    /*
-     * ------------------------------- prediction helper
-     * --------------------------------
-     */
     @Override
     public GenrePrediction predict(String unknownLyrics) {
-        Path modelPath = Path.of(modelDir, modelSubdir());
-        CrossValidatorModel cv = mlService.loadCrossValidationModel(modelPath.toString());
-
-        PipelineModel best = (PipelineModel) cv.bestModel();
-
-        Dataset<Row> df = spark.createDataset(
-                java.util.Arrays.stream(unknownLyrics.split("\\R"))
-                        .filter(s -> !s.isBlank())
-                        .toList(),
-                Encoders.STRING())
-                .withColumn("label", lit(Genre.UNKNOWN.getValue()))
-                .withColumn("id", lit("unknown.txt"));
-
-        Row row = best.transform(df).first();
-        int idx = (int) row.<Double>getAs("prediction").doubleValue();
-        Genre g = Genre.from(idx);
-
-        if (row.schema().fieldNames().length > 0 &&
-                java.util.Arrays.asList(row.schema().fieldNames()).contains("probability")) {
-            DenseVector p = row.getAs("probability");
-            return new GenrePrediction(g.getName(), p.apply(0), p.apply(1));
+        if (genreIndexerModel == null) {
+            log.warn("GenreIndexerModel is not available. Re-initializing data preparation.");
+            prepareData(); // Ensure StringIndexerModel is fit if not already
+            if (genreIndexerModel == null) {
+                throw new IllegalStateException(
+                        "GenreIndexerModel could not be initialized. Train the model first or check data loading.");
+            }
         }
-        return new GenrePrediction(g.getName());
+        Path modelPath = Path.of(modelDir, modelSubdir());
+        CrossValidatorModel cvModel = mlService.loadCrossValidationModel(modelPath.toString());
+        PipelineModel bestModel = (PipelineModel) cvModel.bestModel();
+
+        Dataset<Row> singleRowDf = spark.createDataset(
+                Collections.singletonList(unknownLyrics), Encoders.STRING())
+                .withColumnRenamed("value", Column.VALUE.getName()) // Ensure input column name matches pipeline
+                .withColumn(Column.ID.getName(), lit("unknown_predict_" + UUID.randomUUID().toString())) // Required by
+                                                                                                         // Numerator
+                .withColumn(Column.LABEL.getName(), lit(0.0)); // Dummy label for pipeline stages
+
+        Row predictionRow = bestModel.transform(singleRowDf).first();
+
+        double predictedIndex = predictionRow.getAs(Column.LABEL.getName()); // Prediction is in 'label' column due to
+                                                                             // pipeline setup for LogisticRegression
+        // It might be in "prediction" column, check the actual output schema of
+        // bestModel.transform
+        if (predictionRow.schema().fieldIndex("prediction") >= 0) {
+            predictedIndex = predictionRow.getAs("prediction");
+        }
+
+        String predictedGenreName = genreIndexerModel.labelsArray()[0][(int) predictedIndex];
+
+        Map<String, Double> probabilities = new LinkedHashMap<>();
+        if (predictionRow.schema().fieldIndex("probability") >= 0) {
+            Vector probsVector = predictionRow.getAs("probability");
+            String[] labels = genreIndexerModel.labelsArray()[0];
+            for (int i = 0; i < probsVector.size(); i++) {
+                probabilities.put(labels[i], probsVector.apply(i));
+            }
+        }
+        return new GenrePrediction(predictedGenreName, probabilities);
     }
 
-    /*
-     * ---------------- utility helpers the child class still expects
-     * -------------------
-     */
     protected void saveModel(CrossValidatorModel model, String dir) {
         mlService.saveModel(model, dir);
     }
@@ -141,33 +147,35 @@ public abstract class CommonLyricsPipeline implements LyricsPipeline {
         log.info("Model statistics: {}", stats);
     }
 
-    /*
-     * ------------------------------ abstract hooks
-     * ------------------------------------
-     */
     @Override
     public abstract CrossValidatorModel classify();
 
-    protected abstract String modelSubdir(); // child supplies sub-directory
+    protected abstract String modelSubdir();
 
-    /* expose to subclasses */
     protected Dataset<Row> trainingSet() {
-        return readCsv();
+        prepareData();
+        return trainingSet;
     }
 
     protected Dataset<Row> testSet() {
+        prepareData();
         return testSet;
     }
 
-    protected Path modelBaseDir() { // <-- new
+    protected Path modelBaseDir() {
         return Path.of(modelDir);
     }
 
     @Override
-    public Map<String, Object> getModelStatistics(CrossValidatorModel model) { // ← public
+    public Map<String, Object> getModelStatistics(CrossValidatorModel model) {
         Map<String, Object> stats = new HashMap<>();
-        Arrays.sort(model.avgMetrics());
-        stats.put("Best model metric", model.avgMetrics()[model.avgMetrics().length - 1]);
+        double[] avgMetrics = model.avgMetrics(); // Can be empty if CV not run with evaluation
+        if (avgMetrics != null && avgMetrics.length > 0) {
+            Arrays.sort(avgMetrics); // Smallest to largest
+            stats.put("Best model metric (higher is better)", avgMetrics[avgMetrics.length - 1]);
+        } else {
+            stats.put("Best model metric", "N/A (avgMetrics not available or empty)");
+        }
         return stats;
     }
 }

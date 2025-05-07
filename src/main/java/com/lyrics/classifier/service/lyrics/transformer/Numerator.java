@@ -1,22 +1,101 @@
-// src/main/java/com/lyrics/classifier/service/lyrics/transformer/Numerator.java
 package com.lyrics.classifier.service.lyrics.transformer;
 
+import com.lyrics.classifier.column.Column;
 import org.apache.spark.ml.Transformer;
+import org.apache.spark.ml.param.Param;
 import org.apache.spark.ml.param.ParamMap;
-import org.apache.spark.ml.util.Identifiable;
+import org.apache.spark.ml.util.*;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.expressions.Window;
+import org.apache.spark.sql.functions;
+import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
+import java.io.IOException;
 
-/** Stub that just passes the data through. */
-public class Numerator extends Transformer {
+public class Numerator extends Transformer implements DefaultParamsWritable {
+    private final String uid;
 
-    private final String uid = Identifiable.randomUID("numerator");
-    @Override public String uid() { return uid; }
+    public final Param<String> inputCol;
+    public final Param<String> outputCol;
 
-    @Override public Dataset<Row> transform(Dataset<?> ds) { return ds.toDF(); }
+    public Param<String> inputCol() {
+        return inputCol;
+    }
 
-    @Override public StructType transformSchema(StructType schema) { return schema; }
+    public Param<String> outputCol() {
+        return outputCol;
+    }
 
-    @Override public Numerator copy(ParamMap extra) { return new Numerator(); }
+    public Numerator(String uid) {
+        this.uid = uid;
+        this.inputCol = new Param<>(this, "inputCol", "input column for partitioning (e.g., document ID)");
+        this.outputCol = new Param<>(this, "outputCol", "output column for row number");
+
+        setDefault(this.inputCol, Column.ID.getName());
+        setDefault(this.outputCol, Column.ROW_NUMBER.getName());
+    }
+
+    public Numerator() {
+        this(Identifiable.randomUID("numerator"));
+    }
+
+    public Numerator setInputCol(String value) {
+        set(this.inputCol, value);
+        return this;
+    }
+
+    public String getInputCol() {
+        return getOrDefault(this.inputCol);
+    }
+
+    public Numerator setOutputCol(String value) {
+        set(this.outputCol, value);
+        return this;
+    }
+
+    public String getOutputCol() {
+        return getOrDefault(this.outputCol);
+    }
+
+    @Override
+    public String uid() {
+        return this.uid;
+    }
+
+    @Override
+    public Dataset<Row> transform(Dataset<?> ds) {
+        // OrderBy is technically not needed if just partitioning, but Window functions
+        // require it.
+        // Using getInputCol() for orderBy to ensure determinism if multiple calls
+        // happen,
+        // though any consistently available column (like an ID or a timestamp if
+        // available) would work.
+        return ds.withColumn(getOutputCol(),
+                functions.row_number().over(Window.partitionBy(getInputCol()).orderBy(getInputCol())));
+    }
+
+    @Override
+    public StructType transformSchema(StructType schema) {
+        return schema.add(getOutputCol(), DataTypes.IntegerType, false); // row_number is non-nullable
+    }
+
+    @Override
+    public Numerator copy(ParamMap extra) {
+        return defaultCopy(extra);
+    }
+
+    @Override
+    public void save(String path) throws IOException {
+        write().save(path);
+    }
+
+    @Override
+    public MLWriter write() {
+        return new DefaultParamsWriter(this);
+    }
+
+    public static MLReader<Numerator> read() {
+        return new DefaultParamsReader<>();
+    }
 }
